@@ -191,6 +191,7 @@ libnfs=""
 xnvme=""
 isal=""
 libblkio=""
+librawstor=""
 libzbc=""
 dfs=""
 seed_buckets=""
@@ -267,6 +268,8 @@ for opt do
   ;;
   --disable-libblkio) libblkio="no"
   ;;
+  --disable-librawstor) librawstor="no"
+  ;;
   --disable-tcmalloc) disable_tcmalloc="yes"
   ;;
   --disable-libnfs) libnfs="no"
@@ -327,6 +330,7 @@ if test "$show_help" = "yes" ; then
   echo "--disable-xnvme         Disable xnvme support even if found"
   echo "--disable-isal          Disable isal support even if found"
   echo "--disable-libblkio      Disable libblkio support even if found"
+  echo "--disable-librawstor    Disable librawstor support even if found"
   echo "--disable-libzbc        Disable libzbc even if found"
   echo "--disable-tcmalloc      Disable tcmalloc support"
   echo "--dynamic-libengines    Lib-based ioengines as dynamic libraries"
@@ -2710,6 +2714,22 @@ fi
 print_config "libblkio engine" "$libblkio"
 
 ##########################################
+# Check if we have librawstor
+if test "$librawstor" != "no" ; then
+  if check_min_lib_version rawstor 0.0.0; then
+    librawstor="yes"
+    librawstor_cflags=$(pkg-config --cflags rawstor)
+    librawstor_libs=$(pkg-config --libs rawstor)
+  else
+    if test "$librawstor" = "yes" ; then
+      feature_not_found "librawstor" "librawstor"
+    fi
+    librawstor="no"
+  fi
+fi
+print_config "librawstor engine" "$librawstor"
+
+##########################################
 # check march=armv8-a+crc+crypto
 march_armv8_a_crc_crypto="no"
 if test "$cpu" = "arm64" ; then
@@ -3342,6 +3362,11 @@ if test "$libblkio" = "yes" ; then
   output_sym "CONFIG_LIBBLKIO"
   echo "LIBBLKIO_CFLAGS=$libblkio_cflags" >> $config_host_mak
   echo "LIBBLKIO_LIBS=$libblkio_libs" >> $config_host_mak
+fi
+if test "$librawstor" = "yes" ; then
+  output_sym "CONFIG_LIBRAWSTOR"
+  echo "LIBRAWSTOR_CFLAGS=$librawstor_cflags" >> $config_host_mak
+  echo "LIBRAWSTOR_LIBS=$librawstor_libs" >> $config_host_mak
 fi
 if test "$dynamic_engines" = "yes" ; then
   output_sym "CONFIG_DYNAMIC_ENGINES"

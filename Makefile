@@ -215,6 +215,12 @@ ifdef CONFIG_LIBBLKIO
   libblkio_CFLAGS = $(LIBBLKIO_CFLAGS)
   ENGINES += libblkio
 endif
+ifdef CONFIG_LIBRAWSTOR
+  SOURCE += engines/librawstor.c
+  LIBS += $(LIBRAWSTOR_LIBS)
+  FIO_CFLAGS += $(LIBRAWSTOR_CFLAGS)
+  ENGINES += librawstor
+endif
 ifeq ($(CONFIG_TARGET_OS), Linux)
   SOURCE += diskutil.c fifo.c blktrace.c cgroup.c trim.c engines/sg.c \
 		oslib/linux-dev-lookup.c engines/io_uring.c engines/nvme.c
