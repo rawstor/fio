@@ -1,189 +1,372 @@
 /*
- * null engine
+ * librawstor engine
  *
- * IO engine that doesn't do any real IO transfers, it just pretends to.
- * The main purpose is to test fio itself.
- *
- * It also can act as external C++ engine - compiled with:
- *
- * g++ -O2 -g -shared -rdynamic -fPIC -o cpp_null null.c \
- *	-include ../config-host.h -DFIO_EXTERNAL_ENGINE
- *
- * to test it execute:
- *
- * LD_LIBRARY_PATH=./engines ./fio examples/cpp_null.fio
+ * IO engine that uses the librawstor interface.
  *
  */
-#include <stdlib.h>
+
 #include <assert.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <rawstor.h>
 
 #include "../fio.h"
+#include "../optgroup.h"
 
-struct null_data {
-	struct io_u **io_us;
-	int queued;
-	int events;
+
+struct rawstor_iou {
+    int complete;
+    int seen;
 };
 
-static struct io_u *null_event(struct null_data *nd, int event)
-{
-	return nd->io_us[event];
+
+struct rawstor_data {
+    struct io_u **events;
+    int queued;
+};
+
+
+struct rawstor_options {
+    struct thread_data *td;
+    char *ost;
+    char *ost_host;
+    unsigned int ost_port;
+};
+
+
+static struct fio_option options[] = {
+    {
+        .name = "ost",
+        .lname = "OST host:port",
+        .type = FIO_OPT_STR_STORE,
+        .off1 = offsetof(struct rawstor_options, ost),
+        .help = "OST host:port",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+
+    {
+        .name = NULL,
+    },
+};
+
+
+static struct io_u *fio_rawstor_event(struct thread_data *td, int event) {
+    struct rawstor_data *rd = td->io_ops_data;
+    return rd->events[event];
 }
 
-static int null_getevents(struct null_data *nd, unsigned int min_events,
-			  unsigned int fio_unused max,
-			  const struct timespec fio_unused *t)
+
+static int fio_rawstor_getevents(
+    struct thread_data *td, unsigned int min,
+    unsigned int max, const struct timespec *t)
 {
-	int ret = 0;
+    struct rawstor_data *rd = td->io_ops_data;
+    struct io_u *io_u;
+    struct rawstor_iou *riou;
+    int i;
+    int res;
+    unsigned int events = 0;
 
-	if (min_events) {
-		ret = nd->events;
-		nd->events = 0;
-	}
+    while (1) {
+        RawstorIOEvent *event = rawstor_wait_event();
+        if (event == NULL) {
+            break;
+        }
+        res = rawstor_dispatch_event(event);
+        rawstor_release_event(event);
 
-	return ret;
+        if (res < 0) {
+            log_err("rawstor: dispatch failed: %s\n", strerror(-res));
+            td_verror(td, -res, "xfer");
+        }
+
+        io_u_qiter(&td->io_u_all, io_u, i) {
+            if (!(io_u->flags & IO_U_F_FLIGHT)) {
+                continue;
+            }
+
+            riou = io_u->engine_data;
+            if (riou->seen) {
+                continue;
+            }
+
+            if (riou->complete) {
+                riou->seen = 1;
+                --rd->queued;
+                rd->events[events++] = io_u;
+                if (events >= min) {
+                    return events;
+                }
+            }
+        }
+    }
+
+    return 0;
 }
 
-static void null_queued(struct thread_data *td, struct null_data *nd)
+
+static int io_callback(
+    RawstorObject *object, size_t size, size_t res, int error, void *data)
 {
-	struct timespec now;
+    struct io_u *io_u = data;
+    struct rawstor_iou *riou = io_u->engine_data;
 
-	if (!fio_fill_issue_time(td))
-		return;
+    if (error) {
+        io_u->error = error;
+        io_u->resid = io_u->xfer_buflen;
+    } else {
+        io_u->error = 0;
+    }
 
-	fio_gettime(&now, NULL);
+    riou->complete = 1;
 
-	for (int i = 0; i < nd->queued; i++) {
-		struct io_u *io_u = nd->io_us[i];
-
-		memcpy(&io_u->issue_time, &now, sizeof(now));
-		io_u_queued(td, io_u);
-	}
+    return 0;
 }
 
-static int null_commit(struct thread_data *td, struct null_data *nd)
+
+static enum fio_q_status fio_rawstor_queue(
+    struct thread_data *td,
+    struct io_u *io_u)
 {
-	if (!nd->events) {
-		null_queued(td, nd);
+    struct rawstor_data *rd = td->io_ops_data;
+    RawstorObject *object = FILE_ENG_DATA(io_u->file);
+    struct rawstor_iou *riou = io_u->engine_data;
+    int ret;
 
-#ifndef FIO_EXTERNAL_ENGINE
-		io_u_mark_submit(td, nd->queued);
-#endif
-		nd->events = nd->queued;
-		nd->queued = 0;
-	}
+    fio_ro_check(td, io_u);
 
-	return 0;
+    riou->complete = 0;
+    riou->seen = 0;
+
+    if (io_u->ddir == DDIR_READ) {
+        ret = rawstor_object_pread(
+            object,
+            io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
+            io_callback, io_u);
+    } else if (io_u->ddir == DDIR_WRITE) {
+        ret = rawstor_object_pwrite(
+            object,
+            io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
+            io_callback, io_u);
+    } else if (io_u->ddir == DDIR_TRIM) {
+        if (rd->queued) {
+            return FIO_Q_BUSY;
+        }
+
+        /**
+         * TODO: Implement trim.
+         */
+
+        return FIO_Q_COMPLETED;
+    } else {
+        if (rd->queued) {
+            return FIO_Q_BUSY;
+        }
+
+        /**
+         * TODO: Implement sync.
+         */
+
+        return FIO_Q_COMPLETED;
+    }
+
+    if (ret < 0) {
+        io_u->error = -ret;
+        td_verror(td, io_u->error, "xfer");
+        log_err("rawstor: failed to queue xfer: %s\n", strerror(-ret));
+        return FIO_Q_COMPLETED;
+    }
+
+    rd->queued++;
+
+    return FIO_Q_QUEUED;
 }
 
-static enum fio_q_status null_queue(struct thread_data *td,
-				    struct null_data *nd, struct io_u *io_u)
-{
-	fio_ro_check(td, io_u);
 
-	if (td->io_ops->flags & FIO_SYNCIO)
-		return FIO_Q_COMPLETED;
-	if (nd->events)
-		return FIO_Q_BUSY;
-
-	nd->io_us[nd->queued++] = io_u;
-	return FIO_Q_QUEUED;
+static int uuid_from_string(RawstorUUID *uuid, const char *s) {
+    if (rawstor_uuid_from_string(uuid, s)) {
+        log_err("rawstor: failed to parse UUID: %s\n", s);
+        return 1;
+    }
+    return 0;
 }
 
-static int null_open(struct null_data fio_unused *nd,
-		     struct fio_file fio_unused *f)
-{
-	return 0;
+
+static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
+    struct rawstor_options *o = td->eo;
+    RawstorUUID uuid;
+    RawstorOptsOST opts;
+    RawstorObject *object;
+
+    if (uuid_from_string(&uuid, f->file_name)) {
+        return 1;
+    }
+
+    opts = (RawstorOptsOST){
+        .host = o->ost_host,
+        .port = o->ost_port,
+    };
+
+    if (rawstor_object_open(&opts, &uuid, &object)) {
+        td_verror(td, errno, "rawstor_open");
+        return 1;
+    }
+
+    FILE_SET_ENG_DATA(f, object);
+
+    return 0;
 }
 
-static void null_cleanup(struct null_data *nd)
+
+static int fio_rawstor_close(
+    struct thread_data fio_unused *td,
+    struct fio_file *f)
 {
-	if (nd) {
-		free(nd->io_us);
-		free(nd);
-	}
+    RawstorObject *object = FILE_ENG_DATA(f);
+
+    if (rawstor_object_close(object)) {
+        td_verror(td, errno, "rawstor_object_close");
+        return 1;
+    }
+
+    return 0;
 }
 
-static struct null_data *null_init(struct thread_data *td)
-{
-	struct null_data *nd;
-	nd = malloc(sizeof(*nd));
 
-	memset(nd, 0, sizeof(*nd));
+static int fio_rawstor_io_u_init(struct thread_data *td, struct io_u *io_u) {
+    struct rawstor_iou *riou;
 
-	if (td->o.iodepth != 1) {
-		nd->io_us = calloc(td->o.iodepth, sizeof(struct io_u *));
-		td->io_ops->flags |= FIO_ASYNCIO_SETS_ISSUE_TIME;
-	} else
-		td->io_ops->flags |= FIO_SYNCIO;
+    riou = malloc(sizeof(*riou));
+    if (riou == NULL) {
+        td_verror(td, errno, "malloc");
+        return 1;
+    }
 
-	td_set_ioengine_flags(td);
-	return nd;
+    io_u->engine_data = riou;
+
+    return 0;
 }
 
-static struct io_u *fio_null_event(struct thread_data *td, int event)
-{
-	return null_event(td->io_ops_data, event);
+
+static void fio_rawstor_io_u_free(struct thread_data *td, struct io_u *io_u) {
+    struct rawstor_iou *riou = io_u->engine_data;
+
+    if (riou) {
+        io_u->engine_data = NULL;
+        free(riou);
+    }
 }
 
-static int fio_null_getevents(struct thread_data *td, unsigned int min_events,
-			      unsigned int max, const struct timespec *t)
-{
-	struct null_data *nd = td->io_ops_data;
-	return null_getevents(nd, min_events, max, t);
+
+static void fio_rawstor_cleanup(struct thread_data *td) {
+    struct rawstor_data *rd = td->io_ops_data;
+
+    if (rd) {
+        free(rd->events);
+        free(rd);
+    }
 }
 
-static int fio_null_commit(struct thread_data *td)
-{
-	return null_commit(td, td->io_ops_data);
+
+static int fio_rawstor_setup(struct thread_data *td) {
+    struct rawstor_options *o = td->eo;
+    RawstorOptsOST opts;
+    RawstorObjectSpec spec;
+    RawstorUUID uuid;
+    struct fio_file *f;
+    uint32_t i;
+
+    if (o->ost != NULL) {
+        char *comma = strchr(o->ost, ':');
+        if (comma != NULL) {
+            if (sscanf(comma + 1, "%u", &o->ost_port) != 1) {
+                log_err(
+                    "rawstor: ost port argument must be unsigned integer\n");
+                return 1;
+            }
+            *comma = '\0';
+        }
+        o->ost_host = o->ost;
+    }
+
+    opts = (RawstorOptsOST){
+        .host = o->ost_host,
+        .port = o->ost_port,
+    };
+
+    for (i = 0; i < td->o.nr_files; i++) {
+        f = td->files[i];
+
+        if (uuid_from_string(&uuid, f->file_name)) {
+            return 1;
+        }
+
+        if (rawstor_object_spec(&opts, &uuid, &spec)) {
+            td_verror(td, errno, "rawstor_object_spec");
+            return 1;
+        }
+
+        f->real_file_size = spec.size;
+    }
+
+    return 0;
 }
 
-static enum fio_q_status fio_null_queue(struct thread_data *td,
-					struct io_u *io_u)
-{
-	return null_queue(td, td->io_ops_data, io_u);
+
+static int fio_rawstor_init(struct thread_data *td) {
+    struct rawstor_data *rd = malloc(sizeof(*rd));
+    if (rd == NULL) {
+        td_verror(td, errno, "malloc");
+        return 1;
+    }
+
+    *rd = (struct rawstor_data) {};
+
+    rd->events = calloc(td->o.iodepth, sizeof(struct io_u*));
+    if (td->o.iodepth != 1) {
+        td->io_ops->flags |= FIO_ASYNCIO_SETS_ISSUE_TIME;
+    } else {
+        td->io_ops->flags |= FIO_SYNCIO;
+    }
+
+    td_set_ioengine_flags(td);
+
+    td->io_ops_data = rd;
+    return 0;
 }
 
-static int fio_null_open(struct thread_data *td, struct fio_file *f)
-{
-	return null_open(td->io_ops_data, f);
-}
-
-static void fio_null_cleanup(struct thread_data *td)
-{
-	null_cleanup(td->io_ops_data);
-}
-
-static int fio_null_init(struct thread_data *td)
-{
-	td->io_ops_data = null_init(td);
-	assert(td->io_ops_data);
-	return 0;
-}
 
 static struct ioengine_ops ioengine = {
-	.name		= "librawstor",
-	.version	= FIO_IOOPS_VERSION,
-	.queue		= fio_null_queue,
-	.commit		= fio_null_commit,
-	.getevents	= fio_null_getevents,
-	.event		= fio_null_event,
-	.init		= fio_null_init,
-	.cleanup	= fio_null_cleanup,
-	.open_file	= fio_null_open,
-	.flags		= FIO_DISKLESSIO | FIO_FAKEIO,
+    .name = "librawstor",
+    .version = FIO_IOOPS_VERSION,
+    .queue = fio_rawstor_queue,
+    .getevents = fio_rawstor_getevents,
+    .event = fio_rawstor_event,
+    .setup = fio_rawstor_setup,
+    .init = fio_rawstor_init,
+    .cleanup = fio_rawstor_cleanup,
+    .open_file = fio_rawstor_open,
+    .close_file = fio_rawstor_close,
+    .io_u_init = fio_rawstor_io_u_init,
+    .io_u_free = fio_rawstor_io_u_free,
+    .options = options,
+    .option_struct_size = sizeof(struct rawstor_options),
 };
 
-static void fio_init fio_rawstor_register(void)
-{
-	rawstor_initialize(NULL);
-	register_ioengine(&ioengine);
+
+static void fio_init fio_rawstor_register(void) {
+    if (rawstor_initialize(NULL)) {
+        log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+   register_ioengine(&ioengine);
 }
 
-static void fio_exit fio_rawstor_unregister(void)
-{
-	unregister_ioengine(&ioengine);
-	rawstor_terminate();
+
+static void fio_exit fio_rawstor_unregister(void) {
+    unregister_ioengine(&ioengine);
+    rawstor_terminate();
 }
