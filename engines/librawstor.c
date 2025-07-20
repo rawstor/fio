@@ -236,6 +236,11 @@ static int fio_rawstor_close(
 }
 
 
+static int fio_rawstor_invalidate(struct thread_data *td, struct fio_file *f) {
+    return 0;
+}
+
+
 static int fio_rawstor_io_u_init(struct thread_data *td, struct io_u *io_u) {
     struct rawstor_iou *riou;
 
@@ -350,6 +355,7 @@ static struct ioengine_ops ioengine = {
     .cleanup = fio_rawstor_cleanup,
     .open_file = fio_rawstor_open,
     .close_file = fio_rawstor_close,
+    .invalidate = fio_rawstor_invalidate,
     .io_u_init = fio_rawstor_io_u_init,
     .io_u_free = fio_rawstor_io_u_free,
     .options = options,
