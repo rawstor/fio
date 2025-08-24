@@ -186,7 +186,7 @@ static enum fio_q_status fio_rawstor_queue(
 }
 
 
-static int uuid_from_string(RawstorUUID *uuid, const char *s) {
+static int uuid_from_string(struct RawstorUUID *uuid, const char *s) {
     if (rawstor_uuid_from_string(uuid, s)) {
         log_err("rawstor: failed to parse UUID: %s\n", s);
         return 1;
@@ -197,7 +197,7 @@ static int uuid_from_string(RawstorUUID *uuid, const char *s) {
 
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
     struct rawstor_options *o = td->eo;
-    RawstorUUID uuid;
+    struct RawstorUUID uuid;
     struct RawstorOptsOST opts;
     RawstorObject *object;
 
@@ -279,8 +279,8 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
 static int fio_rawstor_setup(struct thread_data *td) {
     struct rawstor_options *o = td->eo;
     struct RawstorOptsOST opts;
-    RawstorObjectSpec spec;
-    RawstorUUID uuid;
+    struct RawstorObjectSpec spec;
+    struct RawstorUUID uuid;
     struct fio_file *f;
     uint32_t i;
 
