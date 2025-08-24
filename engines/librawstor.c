@@ -198,14 +198,14 @@ static int uuid_from_string(RawstorUUID *uuid, const char *s) {
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
     struct rawstor_options *o = td->eo;
     RawstorUUID uuid;
-    RawstorOptsOST opts;
+    struct RawstorOptsOST opts;
     RawstorObject *object;
 
     if (uuid_from_string(&uuid, f->file_name)) {
         return 1;
     }
 
-    opts = (RawstorOptsOST){
+    opts = (struct RawstorOptsOST){
         .host = o->ost_host,
         .port = o->ost_port,
     };
@@ -278,7 +278,7 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
 
 static int fio_rawstor_setup(struct thread_data *td) {
     struct rawstor_options *o = td->eo;
-    RawstorOptsOST opts;
+    struct RawstorOptsOST opts;
     RawstorObjectSpec spec;
     RawstorUUID uuid;
     struct fio_file *f;
@@ -297,7 +297,7 @@ static int fio_rawstor_setup(struct thread_data *td) {
         o->ost_host = o->ost;
     }
 
-    opts = (RawstorOptsOST){
+    opts = (struct RawstorOptsOST){
         .host = o->ost_host,
         .port = o->ost_port,
     };
@@ -364,7 +364,7 @@ static struct ioengine_ops ioengine = {
 
 
 static void fio_init fio_rawstor_register(void) {
-    if (rawstor_initialize(NULL)) {
+    if (rawstor_initialize(NULL, NULL)) {
         log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(errno));
         exit(1);
     }
