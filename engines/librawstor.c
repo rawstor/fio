@@ -195,22 +195,56 @@ static int uuid_from_string(struct RawstorUUID *uuid, const char *s) {
 }
 
 
+static int get_ost(
+    struct rawstor_options *o,
+    struct RawstorSocketAddress *ost)
+{
+    char *comma;
+
+    if (o->ost == NULL) {
+        return 0;
+    }
+
+    comma = strchr(o->ost, ':');
+    if (comma == NULL) {
+        log_err("rawstor: host:port format expected for ost argument\n");
+        return -1;
+    }
+    if (sscanf(comma + 1, "%u", &o->ost_port) != 1) {
+        log_err(
+            "rawstor: ost port argument must be unsigned integer\n");
+        return -1;
+    }
+    *comma = '\0';
+    o->ost_host = o->ost;
+    *ost = (struct RawstorSocketAddress){
+        .host = o->ost_host,
+        .port = o->ost_port,
+    };
+
+    return 1;
+}
+
+
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
-    struct rawstor_options *o = td->eo;
     struct RawstorUUID uuid;
-    struct RawstorOptsOST opts;
+    struct RawstorSocketAddress ost;
     RawstorObject *object;
+    int res;
 
     if (uuid_from_string(&uuid, f->file_name)) {
         return 1;
     }
 
-    opts = (struct RawstorOptsOST){
-        .host = o->ost_host,
-        .port = o->ost_port,
-    };
+    res = get_ost(td->eo, &ost);
+    if (res < 0) {
+        return 1;
+    }
 
-    if (rawstor_object_open(&opts, &uuid, &object)) {
+    res = res == 0 ?
+        rawstor_object_open(&uuid, &object) :
+        rawstor_object_open_ost(&ost, &uuid, &object);
+    if (res) {
         td_verror(td, errno, "rawstor_open");
         return 1;
     }
@@ -277,39 +311,31 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
 
 
 static int fio_rawstor_setup(struct thread_data *td) {
-    struct rawstor_options *o = td->eo;
-    struct RawstorOptsOST opts;
-    struct RawstorObjectSpec spec;
     struct RawstorUUID uuid;
+    struct RawstorSocketAddress ost;
+    struct RawstorObjectSpec spec;
     struct fio_file *f;
     uint32_t i;
 
-    if (o->ost != NULL) {
-        char *comma = strchr(o->ost, ':');
-        if (comma != NULL) {
-            if (sscanf(comma + 1, "%u", &o->ost_port) != 1) {
-                log_err(
-                    "rawstor: ost port argument must be unsigned integer\n");
-                return 1;
-            }
-            *comma = '\0';
-        }
-        o->ost_host = o->ost;
-    }
-
-    opts = (struct RawstorOptsOST){
-        .host = o->ost_host,
-        .port = o->ost_port,
-    };
-
     for (i = 0; i < td->o.nr_files; i++) {
+        int res;
+
         f = td->files[i];
 
         if (uuid_from_string(&uuid, f->file_name)) {
             return 1;
         }
 
-        if (rawstor_object_spec(&opts, &uuid, &spec)) {
+        res = get_ost(td->eo, &ost);
+        if (res < 0) {
+            return 1;
+        }
+
+        res = res == 0 ?
+            rawstor_object_spec(&uuid, &spec) :
+            rawstor_object_spec_ost(&ost, &uuid, &spec);
+
+        if (res) {
             td_verror(td, errno, "rawstor_object_spec");
             return 1;
         }
