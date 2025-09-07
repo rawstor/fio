@@ -205,18 +205,21 @@ static int get_ost(
         return 0;
     }
 
-    comma = strchr(o->ost, ':');
-    if (comma == NULL) {
-        log_err("rawstor: host:port format expected for ost argument\n");
-        return -1;
+    if (o->ost_host == NULL) {
+        comma = strchr(o->ost, ':');
+        if (comma == NULL) {
+            log_err("rawstor: host:port format expected for ost argument\n");
+            return -1;
+        }
+        if (sscanf(comma + 1, "%u", &o->ost_port) != 1) {
+            log_err(
+                "rawstor: ost port argument must be unsigned integer\n");
+            return -1;
+        }
+        *comma = '\0';
+        o->ost_host = o->ost;
     }
-    if (sscanf(comma + 1, "%u", &o->ost_port) != 1) {
-        log_err(
-            "rawstor: ost port argument must be unsigned integer\n");
-        return -1;
-    }
-    *comma = '\0';
-    o->ost_host = o->ost;
+
     *ost = (struct RawstorSocketAddress){
         .host = o->ost_host,
         .port = o->ost_port,
