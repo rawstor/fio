@@ -397,7 +397,7 @@ static void fio_init fio_rawstor_register(void) {
         log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(errno));
         exit(1);
     }
-   register_ioengine(&ioengine);
+    register_ioengine(&ioengine);
 }
 
 
