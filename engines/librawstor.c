@@ -248,7 +248,7 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
         rawstor_object_open(&uuid, &object) :
         rawstor_object_open_ost(&ost, &uuid, &object);
     if (res) {
-        td_verror(td, errno, "rawstor_open");
+        td_verror(td, -res, "rawstor_open");
         return 1;
     }
 
@@ -264,8 +264,9 @@ static int fio_rawstor_close(
 {
     RawstorObject *object = FILE_ENG_DATA(f);
 
-    if (rawstor_object_close(object)) {
-        td_verror(td, errno, "rawstor_object_close");
+    int res = rawstor_object_close(object);
+    if (res) {
+        td_verror(td, res, "rawstor_object_close");
         return 1;
     }
 
@@ -337,9 +338,8 @@ static int fio_rawstor_setup(struct thread_data *td) {
         res = res == 0 ?
             rawstor_object_spec(&uuid, &spec) :
             rawstor_object_spec_ost(&ost, &uuid, &spec);
-
         if (res) {
-            td_verror(td, errno, "rawstor_object_spec");
+            td_verror(td, -res, "rawstor_object_spec");
             return 1;
         }
 
@@ -393,8 +393,9 @@ static struct ioengine_ops ioengine = {
 
 
 static void fio_init fio_rawstor_register(void) {
-    if (rawstor_initialize(NULL, NULL)) {
-        log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(errno));
+    int res = rawstor_initialize(NULL, NULL);
+    if (res) {
+        log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
         exit(1);
     }
     register_ioengine(&ioengine);
