@@ -30,19 +30,17 @@ struct rawstor_data {
 
 struct rawstor_options {
     struct thread_data *td;
-    char *ost;
-    char *ost_host;
-    unsigned int ost_port;
+    char *uri;
 };
 
 
 static struct fio_option options[] = {
     {
-        .name = "ost",
-        .lname = "OST host:port",
+        .name = "uri",
+        .lname = "Rawstor URI",
         .type = FIO_OPT_STR_STORE,
-        .off1 = offsetof(struct rawstor_options, ost),
-        .help = "OST host:port",
+        .off1 = offsetof(struct rawstor_options, uri),
+        .help = "Rawstor URI",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -195,58 +193,22 @@ static int uuid_from_string(struct RawstorUUID *uuid, const char *s) {
 }
 
 
-static int get_ost(
-    struct rawstor_options *o,
-    struct RawstorSocketAddress *ost)
-{
-    char *comma;
-
-    if (o->ost == NULL) {
-        return 0;
-    }
-
-    if (o->ost_host == NULL) {
-        comma = strchr(o->ost, ':');
-        if (comma == NULL) {
-            log_err("rawstor: host:port format expected for ost argument\n");
-            return -1;
-        }
-        if (sscanf(comma + 1, "%u", &o->ost_port) != 1) {
-            log_err(
-                "rawstor: ost port argument must be unsigned integer\n");
-            return -1;
-        }
-        *comma = '\0';
-        o->ost_host = o->ost;
-    }
-
-    *ost = (struct RawstorSocketAddress){
-        .host = o->ost_host,
-        .port = o->ost_port,
-    };
-
-    return 1;
-}
-
-
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
-    struct RawstorUUID uuid;
-    struct RawstorSocketAddress ost;
-    RawstorObject *object;
     int res;
+    struct rawstor_options *o = td->eo;
+    struct RawstorUUID uuid;
+    RawstorObject *object;
+
+    if (o->uri == NULL) {
+		log_err("rawstor: uri is a required parameter\n");
+        return 1;
+    }
 
     if (uuid_from_string(&uuid, f->file_name)) {
         return 1;
     }
 
-    res = get_ost(td->eo, &ost);
-    if (res < 0) {
-        return 1;
-    }
-
-    res = res == 0 ?
-        rawstor_object_open(&uuid, &object) :
-        rawstor_object_open_ost(&ost, &uuid, &object);
+    res = rawstor_object_open(o->uri, &uuid, &object);
     if (res) {
         td_verror(td, -res, "rawstor_open");
         return 1;
@@ -315,29 +277,26 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
 
 
 static int fio_rawstor_setup(struct thread_data *td) {
+    int res;
+    struct rawstor_options *o = td->eo;
     struct RawstorUUID uuid;
-    struct RawstorSocketAddress ost;
     struct RawstorObjectSpec spec;
     struct fio_file *f;
     uint32_t i;
 
-    for (i = 0; i < td->o.nr_files; i++) {
-        int res;
+    if (o->uri == NULL) {
+		log_err("rawstor: uri is a required parameter\n");
+        return 1;
+    }
 
+    for (i = 0; i < td->o.nr_files; i++) {
         f = td->files[i];
 
         if (uuid_from_string(&uuid, f->file_name)) {
             return 1;
         }
 
-        res = get_ost(td->eo, &ost);
-        if (res < 0) {
-            return 1;
-        }
-
-        res = res == 0 ?
-            rawstor_object_spec(&uuid, &spec) :
-            rawstor_object_spec_ost(&ost, &uuid, &spec);
+        res = rawstor_object_spec(o->uri, &uuid, &spec);
         if (res) {
             td_verror(td, -res, "rawstor_object_spec");
             return 1;
@@ -393,7 +352,7 @@ static struct ioengine_ops ioengine = {
 
 
 static void fio_init fio_rawstor_register(void) {
-    int res = rawstor_initialize(NULL, NULL);
+    int res = rawstor_initialize(NULL);
     if (res) {
         log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
         exit(1);
