@@ -36,16 +36,6 @@ struct rawstor_options {
 
 static struct fio_option options[] = {
     {
-        .name = "uri",
-        .lname = "Rawstor URI",
-        .type = FIO_OPT_STR_STORE,
-        .off1 = offsetof(struct rawstor_options, uri),
-        .help = "Rawstor URI",
-        .category = FIO_OPT_C_ENGINE,
-        .group = FIO_OPT_G_INVALID,
-    },
-
-    {
         .name = NULL,
     },
 };
@@ -184,31 +174,11 @@ static enum fio_q_status fio_rawstor_queue(
 }
 
 
-static int uuid_from_string(struct RawstorUUID *uuid, const char *s) {
-    if (rawstor_uuid_from_string(uuid, s)) {
-        log_err("rawstor: failed to parse UUID: %s\n", s);
-        return 1;
-    }
-    return 0;
-}
-
-
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
     int res;
-    struct rawstor_options *o = td->eo;
-    struct RawstorUUID uuid;
     RawstorObject *object;
 
-    if (o->uri == NULL) {
-		log_err("rawstor: uri is a required parameter\n");
-        return 1;
-    }
-
-    if (uuid_from_string(&uuid, f->file_name)) {
-        return 1;
-    }
-
-    res = rawstor_object_open(o->uri, &uuid, &object);
+    res = rawstor_object_open(f->file_name, &object);
     if (res) {
         td_verror(td, -res, "rawstor_open");
         return 1;
@@ -278,25 +248,14 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
 
 static int fio_rawstor_setup(struct thread_data *td) {
     int res;
-    struct rawstor_options *o = td->eo;
-    struct RawstorUUID uuid;
     struct RawstorObjectSpec spec;
     struct fio_file *f;
     uint32_t i;
 
-    if (o->uri == NULL) {
-		log_err("rawstor: uri is a required parameter\n");
-        return 1;
-    }
-
     for (i = 0; i < td->o.nr_files; i++) {
         f = td->files[i];
 
-        if (uuid_from_string(&uuid, f->file_name)) {
-            return 1;
-        }
-
-        res = rawstor_object_spec(o->uri, &uuid, &spec);
+        res = rawstor_object_spec(f->file_name, &spec);
         if (res) {
             td_verror(td, -res, "rawstor_object_spec");
             return 1;
