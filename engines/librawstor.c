@@ -58,16 +58,11 @@ static int fio_rawstor_getevents(
     int res;
     unsigned int events = 0;
 
-    while (1) {
-        RawstorIOEvent *event = rawstor_wait_event();
-        if (event == NULL) {
-            break;
-        }
-        res = rawstor_dispatch_event(event);
-        rawstor_release_event(event);
+    while (!rawstor_empty()) {
+        res = rawstor_wait();
 
         if (res < 0) {
-            log_err("rawstor: dispatch failed: %s\n", strerror(-res));
+            log_err("rawstor: wait failed: %s\n", strerror(-res));
             td_verror(td, -res, "xfer");
         }
 
