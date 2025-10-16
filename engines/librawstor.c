@@ -64,6 +64,7 @@ static int fio_rawstor_getevents(
         if (res < 0) {
             log_err("rawstor: wait failed: %s\n", strerror(-res));
             td_verror(td, -res, "xfer");
+            break;
         }
 
         io_u_qiter(&td->io_u_all, io_u, i) {
