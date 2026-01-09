@@ -58,7 +58,7 @@ static int fio_rawstor_getevents(
     int res;
     unsigned int events = 0;
 
-    while (!rawstor_empty()) {
+    while (true) {
         res = rawstor_wait();
 
         if (res < 0) {
