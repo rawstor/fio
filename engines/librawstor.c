@@ -275,11 +275,6 @@ static int fio_rawstor_init(struct thread_data *td) {
     *rd = (struct rawstor_data) {};
 
     rd->events = calloc(td->o.iodepth, sizeof(struct io_u*));
-    if (td->o.iodepth != 1) {
-        td->io_ops->flags |= FIO_ASYNCIO_SETS_ISSUE_TIME;
-    } else {
-        td->io_ops->flags |= FIO_SYNCIO;
-    }
 
     td_set_ioengine_flags(td);
 
@@ -291,6 +286,7 @@ static int fio_rawstor_init(struct thread_data *td) {
 static struct ioengine_ops ioengine = {
     .name = "librawstor",
     .version = FIO_IOOPS_VERSION,
+    .flags = FIO_ASYNCIO_SETS_ISSUE_TIME,
     .queue = fio_rawstor_queue,
     .getevents = fio_rawstor_getevents,
     .event = fio_rawstor_event,
