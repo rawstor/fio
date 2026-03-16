@@ -59,59 +59,70 @@ static int fio_rawstor_getevents(
     unsigned int events = 0;
 
     int error = 0;
+    int seen_case = 0;
+
     while (true) {
-        if (error) {
+        if (error || seen_case) {
             log_err("<<<\n");
         }
 
         io_u_qiter(&td->io_u_all, io_u, i) {
-            if (error) {
+            if (error || seen_case) {
                 log_err("1\n");
             }
-            // if (!(io_u->flags & IO_U_F_FLIGHT)) {
-            //     if (error) {
-            //         log_err("2\n");
-            //     }
-            //     continue;
-            // }
+            if (!(io_u->flags & IO_U_F_FLIGHT)) {
+                if (error || seen_case) {
+                    log_err("2\n");
+                }
+                continue;
+            }
 
             riou = io_u->engine_data;
             if (riou->seen) {
-                if (error) {
+                if (error || seen_case) {
                     log_err("3\n");
                 }
                 continue;
             }
 
             if (riou->complete) {
-                if (error) {
+                if (error || seen_case) {
                     log_err("4\n");
                 }
                 riou->seen = 1;
                 --rd->queued;
                 rd->events[events++] = io_u;
-                if (events >= max) {
-                    break;
-                }
-
+<<<<<<< HEAD
             }
-        }
-
-        if (error) {
-            log_err(">>>\n");
         }
 
         if (events >= min) {
-            if (error) {
-                log_err("5\n");
-            }
             return events;
+=======
+                if (events >= min) {
+                    if (error || seen_case) {
+                        log_err("5\n");
+                    }
+                    return events;
+                } else {
+                    seen_case = 1;
+                }
+            }
+        }
+
+        if (seen_case) {
+            log_err("set seen but do not return\n");
+            log_err("events = %u, min = %u, max = %u\n", events, min, max);
+        }
+
+        if (error || seen_case) {
+            log_err(">>>\n");
         }
 
         if (error) {
-            log_err("6\n");
             td_verror(td, -res, "xfer");
             break;
+>>>>>>> 771aa80a (log seen_case)
         }
 
         res = rawstor_wait();
