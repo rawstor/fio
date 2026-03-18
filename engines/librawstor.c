@@ -69,6 +69,10 @@ static int fio_rawstor_getevents(
                 riou->seen = 1;
                 --rd->queued;
                 rd->events[events++] = io_u;
+                if (events >= max) {
+                    break;
+                }
+
             }
         }
 
