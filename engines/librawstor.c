@@ -59,19 +59,7 @@ static int fio_rawstor_getevents(
     unsigned int events = 0;
 
     while (true) {
-        res = rawstor_wait();
-
-        if (res < 0) {
-            log_err("rawstor: wait failed: %s\n", strerror(-res));
-            td_verror(td, -res, "xfer");
-            break;
-        }
-
         io_u_qiter(&td->io_u_all, io_u, i) {
-            if (!(io_u->flags & IO_U_F_FLIGHT)) {
-                continue;
-            }
-
             riou = io_u->engine_data;
             if (riou->seen) {
                 continue;
@@ -86,6 +74,14 @@ static int fio_rawstor_getevents(
 
         if (events >= min) {
             return events;
+        }
+
+        res = rawstor_wait();
+
+        if (res < 0) {
+            log_err("rawstor: wait failed: %s\n", strerror(-res));
+            td_verror(td, -res, "xfer");
+            break;
         }
     }
 
