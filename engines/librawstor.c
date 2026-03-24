@@ -23,6 +23,7 @@ struct rawstor_iou {
 
 
 struct rawstor_data {
+    int opened_files;
     struct io_u **events;
     int queued;
 };
@@ -174,13 +175,28 @@ static enum fio_q_status fio_rawstor_queue(
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
     int res;
     RawstorObject *object;
+    struct rawstor_data *rd = td->io_ops_data;
+
+    if (rd->opened_files == 0) {
+        res = rawstor_initialize(NULL);
+        if (res) {
+            log_err(
+                "rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
+            return 1;
+        }
+        ++rd->opened_files;
+    }
 
     res = rawstor_object_open(f->file_name, &object);
     if (res) {
         td_verror(td, -res, "rawstor_open");
+        if (rd->opened_files == 0) {
+            rawstor_terminate();
+        }
         return 1;
     }
 
+    ++rd->opened_files;
     FILE_SET_ENG_DATA(f, object);
 
     return 0;
@@ -191,12 +207,18 @@ static int fio_rawstor_close(
     struct thread_data fio_unused *td,
     struct fio_file *f)
 {
+    struct rawstor_data *rd = td->io_ops_data;
     RawstorObject *object = FILE_ENG_DATA(f);
 
     int res = rawstor_object_close(object);
     if (res) {
         td_verror(td, res, "rawstor_object_close");
         return 1;
+    }
+
+    --rd->opened_files;
+    if (rd->opened_files == 0) {
+        rawstor_terminate();
     }
 
     return 0;
@@ -249,6 +271,13 @@ static int fio_rawstor_setup(struct thread_data *td) {
     struct fio_file *f;
     uint32_t i;
 
+    res = rawstor_initialize(NULL);
+    if (res) {
+        log_err(
+            "rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
+        return 1;
+    }
+
     for (i = 0; i < td->o.nr_files; i++) {
         f = td->files[i];
 
@@ -260,6 +289,8 @@ static int fio_rawstor_setup(struct thread_data *td) {
 
         f->real_file_size = spec.size;
     }
+
+    rawstor_terminate();
 
     return 0;
 }
@@ -304,16 +335,10 @@ static struct ioengine_ops ioengine = {
 
 
 static void fio_init fio_rawstor_register(void) {
-    int res = rawstor_initialize(NULL);
-    if (res) {
-        log_err("rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
-        exit(1);
-    }
     register_ioengine(&ioengine);
 }
 
 
 static void fio_exit fio_rawstor_unregister(void) {
     unregister_ioengine(&ioengine);
-    rawstor_terminate();
 }
