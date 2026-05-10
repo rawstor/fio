@@ -31,7 +31,6 @@ struct rawstor_data {
 
 struct rawstor_options {
     struct thread_data *td;
-    char *uri;
 };
 
 
