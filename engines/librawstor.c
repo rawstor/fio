@@ -16,6 +16,14 @@
 #include "../optgroup.h"
 
 
+/*
+ * rawstor::io_queue is thread_local: each thread/process gets its own io_uring
+ * ring.  No locking is needed on the hot I/O path.
+ *
+ * rawstor_initialize() handles global one-time state (logging, opts) internally
+ * with its own mutex, so it is safe to call from any thread.
+ */
+
 struct rawstor_iou {
     int complete;
     int seen;
@@ -23,9 +31,17 @@ struct rawstor_iou {
 
 
 struct rawstor_data {
-    int opened_files;
+    int opened_files;   /* number of open rawstor objects on this thread */
     struct io_u **events;
     int queued;
+    /*
+     * Per-thread object pointer.  With fio --thread, multiple threads share
+     * the same fio_file struct, so FILE_ENG_DATA would be a shared write and
+     * all threads would end up pointing at the same RawstorObject.  Storing
+     * the object here (in the per-thread rawstor_data) avoids the race.
+     * Assumes one file per job, which is the standard rawstor use-case.
+     */
+    RawstorObject *object;
 };
 
 
@@ -61,28 +77,29 @@ static int fio_rawstor_getevents(
     while (true) {
         io_u_qiter(&td->io_u_all, io_u, i) {
             riou = io_u->engine_data;
-            if (riou->seen) {
+            if (riou->seen)
                 continue;
-            }
-
             if (riou->complete) {
                 riou->seen = 1;
                 --rd->queued;
                 rd->events[events++] = io_u;
-                if (events >= max) {
+                if (events >= max)
                     break;
-                }
-
             }
         }
 
-        if (events >= min) {
+        if (events >= min)
             return events;
-        }
 
         res = rawstor_wait();
 
         if (res < 0) {
+            /*
+             * ETIME: no completions arrived within the timeout.  The I/O may
+             * still be in flight (e.g. slow backend).  Recheck before giving up.
+             */
+            if (-res == ETIME || -res == ETIMEDOUT)
+                continue;
             log_err("rawstor: wait failed: %s\n", strerror(-res));
             td_verror(td, -res, "xfer");
             break;
@@ -117,7 +134,7 @@ static enum fio_q_status fio_rawstor_queue(
     struct io_u *io_u)
 {
     struct rawstor_data *rd = td->io_ops_data;
-    RawstorObject *object = FILE_ENG_DATA(io_u->file);
+    RawstorObject *object = rd->object;
     struct rawstor_iou *riou = io_u->engine_data;
     int ret;
 
@@ -137,24 +154,14 @@ static enum fio_q_status fio_rawstor_queue(
             io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
             io_callback, io_u);
     } else if (io_u->ddir == DDIR_TRIM) {
-        if (rd->queued) {
+        if (rd->queued)
             return FIO_Q_BUSY;
-        }
-
-        /**
-         * TODO: Implement trim.
-         */
-
+        /* TODO: Implement trim. */
         return FIO_Q_COMPLETED;
     } else {
-        if (rd->queued) {
+        if (rd->queued)
             return FIO_Q_BUSY;
-        }
-
-        /**
-         * TODO: Implement sync.
-         */
-
+        /* TODO: Implement sync. */
         return FIO_Q_COMPLETED;
     }
 
@@ -172,9 +179,9 @@ static enum fio_q_status fio_rawstor_queue(
 
 
 static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
-    int res;
-    RawstorObject *object;
     struct rawstor_data *rd = td->io_ops_data;
+    RawstorObject *object;
+    int res;
 
     if (rd->opened_files == 0) {
         res = rawstor_initialize(NULL);
@@ -183,20 +190,18 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
                 "rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
             return 1;
         }
-        ++rd->opened_files;
     }
 
     res = rawstor_object_open(f->file_name, &object);
     if (res) {
         td_verror(td, -res, "rawstor_open");
-        if (rd->opened_files == 0) {
+        if (rd->opened_files == 0)
             rawstor_terminate();
-        }
         return 1;
     }
 
     ++rd->opened_files;
-    FILE_SET_ENG_DATA(f, object);
+    rd->object = object;
 
     return 0;
 }
@@ -207,18 +212,18 @@ static int fio_rawstor_close(
     struct fio_file *f)
 {
     struct rawstor_data *rd = td->io_ops_data;
-    RawstorObject *object = FILE_ENG_DATA(f);
+    RawstorObject *object = rd->object;
+    int res;
 
-    int res = rawstor_object_close(object);
+    res = rawstor_object_close(object);
     if (res) {
         td_verror(td, res, "rawstor_object_close");
         return 1;
     }
 
     --rd->opened_files;
-    if (rd->opened_files == 0) {
+    if (rd->opened_files == 0)
         rawstor_terminate();
-    }
 
     return 0;
 }
@@ -265,10 +270,10 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
 
 
 static int fio_rawstor_setup(struct thread_data *td) {
-    int res;
     struct RawstorObjectSpec spec;
     struct fio_file *f;
     uint32_t i;
+    int res;
 
     res = rawstor_initialize(NULL);
     if (res) {
@@ -283,6 +288,7 @@ static int fio_rawstor_setup(struct thread_data *td) {
         res = rawstor_object_spec(f->file_name, &spec);
         if (res) {
             td_verror(td, -res, "rawstor_object_spec");
+            rawstor_terminate();
             return 1;
         }
 
