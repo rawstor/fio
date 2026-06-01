@@ -15,6 +15,12 @@
 #include "../fio.h"
 #include "../optgroup.h"
 
+// rawstor >= 0.2.0
+#if (RAWSTOR_VERSION_MAJOR == 0 && RAWSTOR_VERSION_MINOR >= 2) || \
+    RAWSTOR_VERSION_MAJOR >= 1
+#define FF_MULTIQUEUE
+#endif
+
 
 struct rawstor_iou {
     int complete;
@@ -23,6 +29,9 @@ struct rawstor_iou {
 
 
 struct rawstor_data {
+#ifdef FF_MULTIQUEUE
+    RawIOQueue *queue;
+#endif
     int opened_files;
     struct io_u **events;
     int queued;
@@ -80,7 +89,11 @@ static int fio_rawstor_getevents(
             return events;
         }
 
+#ifdef FF_MULTIQUEUE
+        res = rawio_wait(rd->queue);
+#else
         res = rawstor_wait();
+#endif
 
         if (res < 0) {
             log_err("rawstor: wait failed: %s\n", strerror(-res));
@@ -186,7 +199,11 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
         ++rd->opened_files;
     }
 
+#ifdef FF_MULTIQUEUE
+    res = rawstor_object_open(rd->queue, f->file_name, &object);
+#else
     res = rawstor_object_open(f->file_name, &object);
+#endif
     if (res) {
         td_verror(td, -res, "rawstor_open");
         if (rd->opened_files == 0) {
@@ -258,6 +275,9 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
     struct rawstor_data *rd = td->io_ops_data;
 
     if (rd) {
+#ifdef FF_MULTIQUEUE
+        rawio_queue_delete(rd->queue);
+#endif
         free(rd->events);
         free(rd);
     }
@@ -296,6 +316,10 @@ static int fio_rawstor_setup(struct thread_data *td) {
 
 
 static int fio_rawstor_init(struct thread_data *td) {
+#ifdef FF_MULTIQUEUE
+    int res;
+#endif
+
     struct rawstor_data *rd = malloc(sizeof(*rd));
     if (rd == NULL) {
         td_verror(td, errno, "malloc");
@@ -303,6 +327,15 @@ static int fio_rawstor_init(struct thread_data *td) {
     }
 
     *rd = (struct rawstor_data) {};
+
+#ifdef FF_MULTIQUEUE
+    res = rawio_queue_create(256, &rd->queue);
+    if (res < 0) {
+        free(rd);
+        td_verror(td, -res, "rawio_queue_create");
+        return 1;
+    }
+#endif
 
     rd->events = calloc(td->o.iodepth, sizeof(struct io_u*));
 
