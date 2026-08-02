@@ -349,7 +349,7 @@ static int fio_rawstor_init(struct thread_data *td) {
 static struct ioengine_ops ioengine = {
     .name = "librawstor",
     .version = FIO_IOOPS_VERSION,
-    .flags = FIO_ASYNCIO_SETS_ISSUE_TIME,
+    .flags = 0,
     .queue = fio_rawstor_queue,
     .getevents = fio_rawstor_getevents,
     .event = fio_rawstor_event,
