@@ -349,12 +349,6 @@ static int fio_rawstor_init(struct thread_data *td) {
 static struct ioengine_ops ioengine = {
     .name = "librawstor",
     .version = FIO_IOOPS_VERSION,
-    // Not FIO_ASYNCIO_SETS_ISSUE_TIME: fio_rawstor_queue() never sets
-    // io_u->issue_time itself, so claiming that flag left it at zero and
-    // made every reported completion latency garbage (time since epoch,
-    // not since submission) -- let fio's core stamp it right after
-    // ->queue() returns, which is accurate here since queuing is
-    // synchronous.
     .flags = 0,
     .queue = fio_rawstor_queue,
     .getevents = fio_rawstor_getevents,
