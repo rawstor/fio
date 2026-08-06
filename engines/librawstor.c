@@ -15,10 +15,20 @@
 #include "../fio.h"
 #include "../optgroup.h"
 
-// rawstor >= 0.2.0
-#if (RAWSTOR_VERSION_MAJOR == 0 && RAWSTOR_VERSION_MINOR >= 2) || \
-    RAWSTOR_VERSION_MAJOR >= 1
-#define FF_MULTIQUEUE
+#define RAWSTOR_VERSION_GE(major, minor, patch)                             \
+    (RAWSTOR_VERSION_MAJOR > (major) ||                                    \
+     (RAWSTOR_VERSION_MAJOR == (major) && RAWSTOR_VERSION_MINOR > (minor)) || \
+     (RAWSTOR_VERSION_MAJOR == (major) && RAWSTOR_VERSION_MINOR == (minor) && \
+      RAWSTOR_VERSION_PATCH >= (patch)))
+
+// rawstor >= 0.2.5
+#if RAWSTOR_VERSION_GE(0, 2, 5)
+#define FF_FLUSH
+#endif
+
+// rawstor >= 0.3.0
+#if RAWSTOR_VERSION_GE(0, 3, 0)
+#define FF_PWRITE_SYNC
 #endif
 
 
@@ -29,9 +39,7 @@ struct rawstor_iou {
 
 
 struct rawstor_data {
-#ifdef FF_MULTIQUEUE
     RawIOQueue *queue;
-#endif
     int opened_files;
     struct io_u **events;
     int queued;
@@ -89,11 +97,7 @@ static int fio_rawstor_getevents(
             return events;
         }
 
-#ifdef FF_MULTIQUEUE
         res = rawio_wait(rd->queue);
-#else
-        res = rawstor_wait();
-#endif
 
         if (res < 0) {
             log_err("rawstor: wait failed: %s\n", strerror(-res));
@@ -145,10 +149,17 @@ static enum fio_q_status fio_rawstor_queue(
             io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
             io_callback, io_u);
     } else if (io_u->ddir == DDIR_WRITE) {
+#ifdef FF_PWRITE_SYNC
+        ret = rawstor_object_pwrite(
+            object,
+            io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
+            td->o.sync_io != 0, io_callback, io_u);
+#else
         ret = rawstor_object_pwrite(
             object,
             io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
             io_callback, io_u);
+#endif
     } else if (io_u->ddir == DDIR_TRIM) {
         if (rd->queued) {
             return FIO_Q_BUSY;
@@ -159,13 +170,28 @@ static enum fio_q_status fio_rawstor_queue(
          */
 
         return FIO_Q_COMPLETED;
+    } else if (io_u->ddir == DDIR_SYNC || io_u->ddir == DDIR_DATASYNC) {
+#ifdef FF_FLUSH
+        ret = rawstor_object_flush(object, io_callback, io_u);
+#else
+        if (rd->queued) {
+            return FIO_Q_BUSY;
+        }
+
+        /**
+         * TODO: Implement sync (needs rawstor >= 0.2.5's
+         * rawstor_object_flush()).
+         */
+
+        return FIO_Q_COMPLETED;
+#endif
     } else {
         if (rd->queued) {
             return FIO_Q_BUSY;
         }
 
         /**
-         * TODO: Implement sync.
+         * TODO: Implement sync_file_range and other ddirs.
          */
 
         return FIO_Q_COMPLETED;
@@ -199,11 +225,7 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
         ++rd->opened_files;
     }
 
-#ifdef FF_MULTIQUEUE
     res = rawstor_object_open(rd->queue, f->file_name, &object);
-#else
-    res = rawstor_object_open(f->file_name, &object);
-#endif
     if (res) {
         td_verror(td, -res, "rawstor_open");
         if (rd->opened_files == 0) {
@@ -275,9 +297,7 @@ static void fio_rawstor_cleanup(struct thread_data *td) {
     struct rawstor_data *rd = td->io_ops_data;
 
     if (rd) {
-#ifdef FF_MULTIQUEUE
         rawio_queue_delete(rd->queue);
-#endif
         free(rd->events);
         free(rd);
     }
@@ -316,9 +336,7 @@ static int fio_rawstor_setup(struct thread_data *td) {
 
 
 static int fio_rawstor_init(struct thread_data *td) {
-#ifdef FF_MULTIQUEUE
     int res;
-#endif
 
     struct rawstor_data *rd = malloc(sizeof(*rd));
     if (rd == NULL) {
@@ -328,14 +346,12 @@ static int fio_rawstor_init(struct thread_data *td) {
 
     *rd = (struct rawstor_data) {};
 
-#ifdef FF_MULTIQUEUE
     res = rawio_queue_create(256, &rd->queue);
     if (res < 0) {
         free(rd);
         td_verror(td, -res, "rawio_queue_create");
         return 1;
     }
-#endif
 
     rd->events = calloc(td->o.iodepth, sizeof(struct io_u*));
 
