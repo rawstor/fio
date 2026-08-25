@@ -30,6 +30,7 @@
 #if RAWSTOR_VERSION_GE(0, 3, 0)
 #define FF_PWRITE_SYNC
 #define FF_TARGET_API
+#define FF_COLLAPSED_CALLBACK
 #endif
 
 
@@ -161,6 +162,50 @@ static int io_callback(
 }
 
 
+#ifdef FF_COLLAPSED_CALLBACK
+// rawstor >= 0.3.0 collapsed rawstor_object_pread()/_preadv()/_pwrite()/
+// _pwritev()'s callback from the old 5-arg RawstorCallback shape (object,
+// size, result, error, data) down to (result, error, data) -- io_callback()
+// above no longer matches (a silent function-pointer mismatch in C, not a
+// build error, which manifested as this engine hanging/misbehaving at
+// runtime against >= 0.3.0). This is the matching replacement.
+static int io_callback2(size_t res, int error, void *data) {
+    struct io_u *io_u = data;
+    struct rawstor_iou *riou = io_u->engine_data;
+
+    if (error) {
+        io_u->error = error;
+        io_u->resid = io_u->xfer_buflen;
+    } else {
+        io_u->error = 0;
+    }
+
+    riou->complete = 1;
+
+    return 0;
+}
+
+// rawstor_object_flush()'s own >= 0.3.0 shape (result, data): unlike
+// io_callback2() above, there's no separate error parameter -- result is
+// itself 0 or a negative errno.
+static int flush_callback2(ssize_t result, void *data) {
+    struct io_u *io_u = data;
+    struct rawstor_iou *riou = io_u->engine_data;
+
+    if (result < 0) {
+        io_u->error = (int)-result;
+        io_u->resid = io_u->xfer_buflen;
+    } else {
+        io_u->error = 0;
+    }
+
+    riou->complete = 1;
+
+    return 0;
+}
+#endif
+
+
 static enum fio_q_status fio_rawstor_queue(
     struct thread_data *td,
     struct io_u *io_u)
@@ -176,16 +221,23 @@ static enum fio_q_status fio_rawstor_queue(
     riou->seen = 0;
 
     if (io_u->ddir == DDIR_READ) {
+#ifdef FF_COLLAPSED_CALLBACK
+        ret = rawstor_object_pread(
+            object,
+            io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
+            io_callback2, io_u);
+#else
         ret = rawstor_object_pread(
             object,
             io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
             io_callback, io_u);
+#endif
     } else if (io_u->ddir == DDIR_WRITE) {
-#ifdef FF_PWRITE_SYNC
+#if defined(FF_PWRITE_SYNC) && defined(FF_COLLAPSED_CALLBACK)
         ret = rawstor_object_pwrite(
             object,
             io_u->xfer_buf, io_u->xfer_buflen, io_u->offset,
-            td->o.sync_io != 0, io_callback, io_u);
+            td->o.sync_io != 0, io_callback2, io_u);
 #else
         ret = rawstor_object_pwrite(
             object,
@@ -203,7 +255,9 @@ static enum fio_q_status fio_rawstor_queue(
 
         return FIO_Q_COMPLETED;
     } else if (io_u->ddir == DDIR_SYNC || io_u->ddir == DDIR_DATASYNC) {
-#ifdef FF_FLUSH
+#if defined(FF_FLUSH) && defined(FF_COLLAPSED_CALLBACK)
+        ret = rawstor_object_flush(object, flush_callback2, io_u);
+#elif defined(FF_FLUSH)
         ret = rawstor_object_flush(object, io_callback, io_u);
 #else
         if (rd->queued) {
