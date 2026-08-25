@@ -29,6 +29,38 @@
 // rawstor >= 0.3.0
 #if RAWSTOR_VERSION_GE(0, 3, 0)
 #define FF_PWRITE_SYNC
+#define FF_TARGET_API
+#endif
+
+
+#ifdef FF_TARGET_API
+// rawstor_target_open()/rawstor_object_close()/rawstor_target_spec() are
+// async-only starting with rawstor 0.3.0 (their blocking
+// rawstor_object_open()/_close()/_spec() predecessors are gone) -- these
+// three call sites (fio_rawstor_open/_close/_setup below) still want a
+// simple blocking call, so this is a minimal synchronous wrapper: submit,
+// then pump the given queue until the callback fires.
+struct rawstor_sync_op {
+    int done;
+    ssize_t result;
+};
+
+static int rawstor_sync_op_cb(ssize_t result, void *data) {
+    struct rawstor_sync_op *op = data;
+    op->result = result;
+    op->done = 1;
+    return 0;
+}
+
+static int rawstor_sync_wait(RawIOQueue *queue, struct rawstor_sync_op *op) {
+    while (!op->done) {
+        int res = rawio_wait(queue);
+        if (res < 0) {
+            return res;
+        }
+    }
+    return op->result < 0 ? (int)op->result : 0;
+}
 #endif
 
 
@@ -214,6 +246,9 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
     int res;
     RawstorObject *object;
     struct rawstor_data *rd = td->io_ops_data;
+#ifdef FF_TARGET_API
+    struct rawstor_sync_op op = {0};
+#endif
 
     if (rd->opened_files == 0) {
         res = rawstor_initialize(NULL);
@@ -225,7 +260,15 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
         ++rd->opened_files;
     }
 
+#ifdef FF_TARGET_API
+    res = rawstor_target_open(
+        rd->queue, f->file_name, &object, rawstor_sync_op_cb, &op);
+    if (res == 0) {
+        res = rawstor_sync_wait(rd->queue, &op);
+    }
+#else
     res = rawstor_object_open(rd->queue, f->file_name, &object);
+#endif
     if (res) {
         td_verror(td, -res, "rawstor_open");
         if (rd->opened_files == 0) {
@@ -247,12 +290,27 @@ static int fio_rawstor_close(
 {
     struct rawstor_data *rd = td->io_ops_data;
     RawstorObject *object = FILE_ENG_DATA(f);
+    int res;
+#ifdef FF_TARGET_API
+    struct rawstor_sync_op op = {0};
+#endif
 
-    int res = rawstor_object_close(object);
+#ifdef FF_TARGET_API
+    res = rawstor_object_close(object, rawstor_sync_op_cb, &op);
+    if (res == 0) {
+        res = rawstor_sync_wait(rd->queue, &op);
+    }
+    if (res) {
+        td_verror(td, -res, "rawstor_object_close");
+        return 1;
+    }
+#else
+    res = rawstor_object_close(object);
     if (res) {
         td_verror(td, res, "rawstor_object_close");
         return 1;
     }
+#endif
 
     --rd->opened_files;
     if (rd->opened_files == 0) {
@@ -309,6 +367,9 @@ static int fio_rawstor_setup(struct thread_data *td) {
     struct RawstorObjectSpec spec;
     struct fio_file *f;
     uint32_t i;
+#ifdef FF_TARGET_API
+    RawIOQueue *queue;
+#endif
 
     res = rawstor_initialize(NULL);
     if (res) {
@@ -317,18 +378,50 @@ static int fio_rawstor_setup(struct thread_data *td) {
         return 1;
     }
 
+#ifdef FF_TARGET_API
+    /* Depth 1 would be enough if rawstor_target_spec() only ever
+     * submitted a single op, but a mirrored location (multiple
+     * comma-separated backends) can fan a single spec() call out into
+     * several concurrent per-backend requests -- match rd->queue's own
+     * depth below so that fan-out never runs out of submission slots. */
+    res = rawio_queue_create(256, &queue);
+    if (res < 0) {
+        td_verror(td, -res, "rawio_queue_create");
+        rawstor_terminate();
+        return 1;
+    }
+#endif
+
     for (i = 0; i < td->o.nr_files; i++) {
         f = td->files[i];
 
+#ifdef FF_TARGET_API
+        {
+            struct rawstor_sync_op op = {0};
+            res = rawstor_target_spec(
+                queue, f->file_name, &spec, rawstor_sync_op_cb, &op);
+            if (res == 0) {
+                res = rawstor_sync_wait(queue, &op);
+            }
+        }
+#else
         res = rawstor_object_spec(f->file_name, &spec);
+#endif
         if (res) {
             td_verror(td, -res, "rawstor_object_spec");
+#ifdef FF_TARGET_API
+            rawio_queue_delete(queue);
+#endif
+            rawstor_terminate();
             return 1;
         }
 
         f->real_file_size = spec.size;
     }
 
+#ifdef FF_TARGET_API
+    rawio_queue_delete(queue);
+#endif
     rawstor_terminate();
 
     return 0;
