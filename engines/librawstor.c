@@ -316,7 +316,7 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
 
 #ifdef FF_TARGET_API
     res = rawstor_target_open(
-        rd->queue, f->file_name, &object, rawstor_sync_op_cb, &op);
+        rd->queue, f->file_name, 0, &object, rawstor_sync_op_cb, &op);
     if (res == 0) {
         res = rawstor_sync_wait(rd->queue, &op);
     }
