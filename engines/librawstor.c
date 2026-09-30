@@ -311,7 +311,6 @@ static int fio_rawstor_open(struct thread_data *td, struct fio_file *f) {
                 "rawstor: rawstor_initialize() failed: %s\n", strerror(-res));
             return 1;
         }
-        ++rd->opened_files;
     }
 
 #ifdef FF_TARGET_API
